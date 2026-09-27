@@ -1,0 +1,478 @@
+# dtap_scaffold -- assumptions and live-verification notes
+
+`dtap_scaffold` is shared infrastructure (no upstream attacker to be faithful to);
+this ledger records the non-obvious lifecycle/orchestration decisions, the ones
+surfaced by running the real Docker + MCP stack, and the current live-verification
+status per text domain.
+
+## A. The env lifecycle replaces upstream's pool orchestrator
+
+Upstream splits the work across `utils/mcp_manager.py` (starts one MCP server),
+`utils/resource_manager.py` + `utils/task_executor.py` (the environment pool that
+brings up Docker, leases ports, seeds, resets). `DockerEnvStack` collapses the
+pool's role for one instance, so a few things upstream's pool does in the PARENT
+process must be reproduced here:
+
+- **A.1 `<ENV>_PROJECT_NAME` export (live-found).** Servers that `docker exec`
+  into their env container (terminal/code, research, os-filesystem, ...) resolve
+  the container name from `f"{env.upper().replace('-','_')}_PROJECT_NAME"` (mirrors
+  `utils.compose_utils.get_project_name`) -> `{project}-{env}-env-1`. Upstream's
+  pool sets these in the parent env before `mcp_manager` starts each server.
+  `DockerEnvStack._launch` and `_run_setup` both export the full
+  `<ENV>_PROJECT_NAME` map (each env's per-instance compose project) -- to the MCP
+  servers, the injection servers, AND `setup.sh`. Without it the terminal MCP
+  server raises `TERMINAL_PROJECT_NAME is not set`, and the os-filesystem / slack
+  seeders SILENTLY skip seeding (`[WARN] ..._PROJECT_NAME not set`, rc=0) leaving
+  the env unseeded.
+- **A.2 MCP servers inherit the parent environment.** `_server_env` starts from
+  `dict(os.environ)` (so `uv run python` / `python3` find PATH), then overlays the
+  server's own listen port, the rendered `${VAR}` host ports, and the state +
+  project-name overrides -- matching `mcp_manager._setup_environment`
+  (`os.environ.copy()` + server `env`).
+- **A.3 Crash diagnosability.** A server's stdout+stderr are captured to a per
+  server log (`_spawn_process(log_path=...)`); a readiness timeout is re-raised
+  with those log tails. This is how the missing-dep crashes below were found
+  (otherwise they vanished into DEVNULL and became a 10-minute readiness hang; the
+  ready timeout is now 150s, not 600s).
+- **A.4 `calendar` health-wait cap (live-found).** `wait_healthy` mirrors upstream's
+  `_wait_for_healthy` exactly, including that BOTH callers discard its result: a
+  container that never reports healthy only costs wall-clock, it does not abort the
+  run. `calendar-api` is such a container -- its upstream healthcheck runs `curl`,
+  which is absent from `decodingtrustagent/google-calendar:api-latest`, so every probe
+  exits -1 ("executable file not found in $PATH") and the check can never pass, while
+  the service itself is up (`/health` -> 200). Measured 2026-08; it is the only
+  unsatisfiable check among the 32 healthchecks in upstream's compose files (the three
+  other `curl`-based ones do ship `curl`). Because it can never pass, `wait_healthy` does not exit
+  early here the way it does elsewhere: it burns its ENTIRE budget and returns False,
+  every time. Measured: 31.3s against a 30s budget for calendar, versus 16.7s for
+  `travel` (a working healthcheck) on the same budget. So the 120s default was 120s of
+  dead wait on each of the 28 malicious text-domain tasks that activate calendar (16
+  `crm`, 12 `workflow`), and a larger timeout buys no extra chance of success.
+  `env_registry._HEALTH_TIMEOUT_OVERRIDES` caps it at 30s. Because the wait always
+  fails, that cap IS the de-facto readiness delay before `setup.sh` POSTs to
+  `/api/v1/{reset,auth,admin,send}`, and the service serves 3.0-4.2s after a cold
+  `compose up` on an idle machine (many instances may start in parallel, hence the
+  headroom). It also covers a FIXED upstream check: interval 10s with no
+  `start_period` means the first probe fires at ~10s and passes at once, versus
+  travel's 16.7s which is almost entirely its 15s `start_period`. Over-waiting costs
+  seconds; under-waiting risks seeding a service that is not up. The override should
+  be deleted once upstream fixes the check.
+  An explicit env.yaml `health_timeout` still takes precedence, and no other env is
+  affected. Deliberately NOT fixed with a compose overlay: we do not own upstream's
+  compose file, and an overlay would diverge the container definition under test.
+
+- **A.5 `terminal` reset: the dead pip line is filtered out (live-found, TEMPORARY).**
+  `terminal` (the `code` domain's env) resets between runs via `/scripts/reset.sh`, baked into
+  `decodingtrustagent/code-terminal` and present in no repository. Step 2 of 10 is a
+  `pip3 install pandas==1.3.0 numpy==1.21.0 pyarrow==6.0.0 2>/dev/null || true`. The image is
+  Python 3.10.12 and neither pin has a cp310 wheel (pandas gained 3.10 at 1.3.4, numpy at
+  1.21.2), so pip source-builds and gcc fails; `|| true` swallows it and the script reports
+  success having changed nothing. Measured 111-160s per reset with the installed versions
+  byte-identical either side. Reset runs once per RUN, so it multiplies by `max_runs`.
+  `env_registry._RESET_SCRIPT_OVERRIDES` substitutes a `sed`-filtered invocation of upstream's
+  OWN script, in upstream's own order, minus that one proven no-op. Measured A/B on a container
+  carrying planted attack state: 113.1s -> 0.4s, with the cleanup verified intact (planted files
+  removed, `.bashrc` restored). It fails safe: if upstream edits or removes the line the `sed`
+  address stops matching and the unmodified script runs, slower but never wrong. Delete the
+  override once upstream fixes the image.
+  NOT fixable by lowering `reset_script_timeout`: the pip line is step 2 and SEVEN cleanup steps
+  follow it, so a timeout would skip the cleanup and leak attack state into the next run; it
+  would also save nothing, because the timeout kills only the local `docker exec` client while
+  the container-side process tree keeps running orphaned.
+
+- **A.6 Script-reset failures recreate the environment (fail closed).** A timed-out
+  or non-zero `reset_scripts` command means the environment is not known-clean. Retrying
+  in place is unsafe because the container-side exec may still be running. The stack
+  therefore tears down that environment and its volumes, brings it back under the same
+  Compose project and leased ports, waits for health, and then runs the task setup once.
+  This both kills orphaned reset processes and prevents attack state leaking into the
+  next optimizer run. The stack remembers that failure and recreates the environment
+  directly on later rounds, rather than paying the same timeout repeatedly. Only typed
+  script failures take this path; endpoint/configuration and unrelated programming errors
+  still propagate. Environments marked `disable_reuse` skip scripts and recreate directly,
+  matching upstream for multi-run tasks.
+
+- **A.7 Workflow judges need narrow aliases for two upstream utility packages (live-found).**
+  Workflow `judge.py` files import `slack.helpers` and `gmail.helpers` as top-level
+  packages. In the SDK wheel those packages are installed as `dt_arena.utils.slack`
+  and `dt_arena.utils.gmail`, while `utils.judge_helpers` exposes neither top-level
+  name. The OOB judge child therefore aliases only those two installed packages in
+  `sys.modules` before dynamically importing a task judge. It intentionally does
+  not expose the full `dt_arena/utils` directory on `sys.path`, because sibling
+  package names such as `calendar` would shadow Python standard-library modules.
+  This changes no judge logic and should be removed once upstream judges use the
+  installed namespaced package paths.
+
+## B. Undeclared upstream server dependencies (the `[sdk]` extra)
+
+The env MCP / injection servers are upstream Python that imports third-party
+packages the SDK wheel does not pull. Each was found by launching the server and
+reading its captured crash log; they are declared in the `sdk` optional extra:
+
+- `fastmcp` -- EVERY env MCP server (`travel/mcp_server.py` and every sibling) and
+  EVERY injection server (`injection_mcp_server/<env>/env_injection.py`) opens with
+  `from fastmcp import FastMCP`; the host proxy's genuine call/list path imports it
+  too. Without it, every env server crashes at import and `EnvStack.up()` raises
+  `MCP servers failed to become ready` (confirmed live). It is a host dependency, not
+  container-only.
+- `ujson` -- env MCP servers (e.g. travel `mcp_server.py`) + the hospital injection
+  server.
+- `psycopg2-binary` -- the customer_service injection server (`import psycopg2` at
+  module top).
+- `beautifulsoup4` -- the finance MCP server (`server/extractor_simple.py` opens with
+  `from bs4 import BeautifulSoup`); without it the finance server crashes at import and
+  `EnvStack.up()` raises `MCP servers failed to become ready: finance` (confirmed live).
+- `uv` -- the launch command for some servers (terminal, finance); must be on PATH.
+
+**Launch interpreter (`python3` on PATH).** The env servers are spawned via the
+`mcp.yaml` `python_executable` (`"python3"`) running the SDK's server script (e.g.
+`dt_arena/mcp_server/travel/mcp_server.py`). The interpreter is resolved from PATH,
+NOT `sys.executable`, so the environment holding these `[sdk]` deps + the SDK's
+`dt_arena` package must be the one `python3` resolves to: activate the venv (or put
+its `bin` first on PATH) before a live run, else the servers launch under a different
+`python3` and fail to import `fastmcp`/`dt_arena`. (The offline suites mock every
+server, so this only bites the Docker/live path.)
+
+## C. Container networking
+
+`docker compose up` is run per-env as project `dtap_{iid}_{env}`, with the leased
+host ports exported as env vars for `${VAR}` substitution. Two networking shapes
+appear and BOTH are driven by the same exported port vars:
+
+- **published ports** (`${VAR}:container_port`) -- crm, medical, os-filesystem,
+  research, telecom, travel, customer_service.
+- **`network_mode: host`** with env-var-controlled bind addresses (e.g. mailpit
+  `MP_UI_BIND_ADDR: 0.0.0.0:${GMAIL_UI_PORT}`) -- terminal, finance, legal, gmail,
+  slack.
+
+**macOS Docker Desktop caveat (verified on this machine, 29.5).** A
+`network_mode: host` container binds inside the Docker VM, NOT the Mac host's
+localhost: a throwaway host-net container is `Up` yet `curl localhost:<port>` from
+the Mac is refused. So anything that reaches a host-net service over host-localhost
+HTTP fails on macOS. Two access patterns therefore behave differently:
+
+- **`docker exec` into the container** (terminal/code, research, os-filesystem MCP
+  servers) -- works on macOS; this is why the host-net `terminal` env is fully
+  green here.
+- **host-localhost HTTP to the container** (the gmail/slack MCP servers reaching
+  their backends, and the gmail/slack `setup.sh`/reset curls) -- fails on macOS,
+  works on a Linux Docker host where `network_mode: host` IS the real host
+  localhost. A Linux Docker host is unaffected, so this is a macOS-only caveat.
+
+## D. Live-verification status (real Docker, this machine)
+
+Verified end to end earlier: the `travel` domain runs both agents (Claude Code +
+OpenClaw) through the host MCP proxy with the OOB judge returning task_success.
+
+A no-LLM env-lifecycle smoke (compose up + MCP/injection servers + probe) was then
+run across all 11 text domains. **9/11 start cleanly** (env containers up, every
+MCP server answering):
+
+- START cleanly: code/terminal, crm, legal, medical, os-filesystem, research,
+  telecom, travel, workflow. This includes `network_mode: host` domains (terminal,
+  legal, workflow) and the gmail+slack-only domain (workflow), so host-networking
+  and the shared service envs are not themselves the problem.
+
+The 2 non-green domains are the macOS caveat above, NOT a port flaw:
+
+- **customer-service** and **finance** fail in `setup.sh` at a `curl
+  localhost:<GMAIL_AUTH_PORT>` -- diagnosed: the gmail `user-service` container is
+  `Up (healthy)` (its internal healthcheck passes), but the Mac host cannot reach
+  its host-net port. Same root cause makes the `legal`/`workflow` RESET-endpoint
+  curls -- and the `crm` `setup.sh` slack curl -- fail. All five are gmail/slack-backed
+  and exercise host-localhost HTTP to a `network_mode: host` service. (The original
+  PR always gated the container e2e behind the `docker`/`live` markers, and a Linux
+  Docker host is unaffected, so this is a macOS-only caveat, characterized and
+  confirmed, not a regression.)
+
+Reset (not gating `up`): 6/11 reset within the 90s observation window. The
+non-gmail miss is the `code` domain, whose `terminal` env sets
+`reset_script_timeout: 180` in `env.yaml`. The port was DROPPING that per-env
+value and truncating the cold `docker exec` reset at a hardcoded 30s. This is now
+fixed: `DockerEnvStack.reset` threads `EnvRegistry.reset_script_timeout(env)`
+(180 for `terminal`, else a 60s default), matching upstream
+`task_executor._reset_instance` (`env_def.get("reset_script_timeout", 60)`; the
+30s in `reset_helpers`' signature is dead, always overridden by that caller).
+Correction to an earlier note: the `anonframework` controller does NOT retry a failed
+reset. `reset_ephemeral_state` runs between runs, and if it raises the controller
+logs it, records the traceback on `TaskResult.error`, and ends the whole
+multi-run task with `stop_reason="error"` (`core/controller.py`) -- so an
+under-budgeted reset timeout would spuriously error the task, which is exactly
+why the per-env timeout matters. (Upstream's own environment pool retries via
+`reset_retries`/`reset_retry_delay`, but that pool is the orchestrator
+`DockerEnvStack` replaces.) A reset failure still does not block the initial
+`up()`, which seeds via `setup.sh` independently.
+
+## E. The judge-model substitution reaches every LLM judge
+
+DTAP graders subclass `BaseJudge` (`dt_arena/src/types/judge.py`), whose
+`__init__` defaults `judge_model` to the placeholder `"gpt-5.4"`. Per-task judges
+call `super().__init__(domain=...)` and never pass a model, so absent any fix
+they call `"gpt-5.4"` -- which the LiteLLM proxy does not serve. Only the
+`customer_service` domain reads the `JUDGE_MODEL` env var; every other domain's
+LLM judge (in the text-only set, that is the 45 `travel` judges that call
+`llm_judge_*(..., model=self.judge_model)`) would otherwise fail and score
+`attack_success=False` even on a genuinely successful attack.
+
+`judge_runner._CHILD_SOURCE` therefore installs `_install_judge_model_override()`
+in the OOB judge subprocess before any judge runs: it rewrites ONLY the `"gpt-5.4"`
+default to the configured `JUDGE_MODEL` and touches no judge logic (the single
+permitted judge-MODEL change). Because judges import `BaseJudge` via both
+`from dt_arena.src.types.judge import BaseJudge` and `from judge import BaseJudge`
+(the SDK adds `dt_arena/src/types` to `sys.path`), the override also sets
+`sys.modules["judge"]` to the one patched module so a single patch covers both
+styles. The substitute model must be one the judge endpoint serves; the claim/
+experiment passes it through `run_dtap_judge(judge_model=...)`.
+
+A SECOND model seam exists in the `research` domain and is NOT covered by the
+`BaseJudge` override: `gpt_score_report` (`dt_arena/utils/research/helpers.py`) is a
+standalone `urllib` POST that reads `OPENAI_MODEL` (default placeholder `"gpt-5.1"`)
+rather than `BaseJudge` / `JUDGE_MODEL`, so it would otherwise request the unserved
+`gpt-5.1` and silently mis-score every `research` LLM-graded task `False`.
+`_build_child_env` therefore ALSO exports `OPENAI_MODEL` = the configured judge model
+(twin of the `JUDGE_MODEL` export), routing the research harm scorer to the served
+model. With both the `BaseJudge` default patch and the `OPENAI_MODEL` export in
+place, the substitution reaches every text-only LLM judge (the `BaseJudge`-based
+graders and the `research` `OPENAI_MODEL` scorer). Endpoint/key are already
+redirected for both via `OPENAI_BASE_URL` / `OPENAI_API_KEY`.
+
+## F. The `host` trust boundary (anonframework-afforded, beyond DTAP's vectors)
+
+DTAP itself enumerates four attack vectors (`dt_arena/src/types/task.py`:
+prompt / tool / environment / skill). anonframework additionally exposes the target
+MACHINE as its own trust boundary, because these agents (Claude Code, OpenClaw)
+run with native OS tools in a container -- a locus that can realistically be
+compromised (a poisoned image, a shared mount, a supply-chain artifact on disk, or
+full RCE) independent of the MCP-backed `environment` services. This is a
+framework-completeness addition, not a DTAP fidelity claim, and it is strictly
+additive: a passthrough optimizer places no files and runs no code, so the machine
+is exactly what DTAP would run.
+
+- **F.1 Native tool CALLS stay observable-only.** The agent's own bash/edit/exec
+  are observed under `agent_trace_tool_calls`, never tampered mid-run. The `host`
+  tree is the ATTACKER's own write/execute access, a Controllable. The two are
+  distinct surfaces (observe the agent vs. the attacker acting on the machine).
+- **F.2 Two independent capabilities.** `host_filesystem` (place/add/edit/delete
+  files before the run) and `host_code_execution` (arbitrary code) are siblings
+  under `host`: code execution subsumes filesystem in raw capability, but they are
+  scoped separately so an experiment can grant a disk-only foothold (a mounted
+  document, no RCE) without granting full code execution. Holding `host` grants
+  both.
+- **F.3 The base owns the per-run workspace.** So the host surfaces can shape the
+  machine BEFORE the agent launches, the base mints `self._run_dir` (with a
+  `workspace/`) at the top of `run()`, applies file ops into it, runs the
+  code-execution foothold against it, then hands it to the subclass, which mounts
+  THAT dir as the agent's workspace (claudecode at `/dtap/workspace`, openclaw at
+  `/state/workspace`). On a declined run the workspace is identical to before; it
+  is created one step earlier, nothing else changes.
+- **F.4 Code execution is a pre-agent, attacker-terminated LOOP.** `code_execution`
+  fires a `ControllablePostCallEvent` repeatedly: each round's `answer` carries the
+  previous command's combined output (empty first), an injection is a shell
+  command run via `_exec_on_host`, and its output feeds the next round. The loop
+  ends the instant the optimizer declines ("the attacker decides it doesn't need
+  anymore"); `max_code_exec_rounds` (default 64) is only a runaway backstop for an
+  optimizer that never declines, and the optimizer's LLM budget bounds it in
+  practice. It runs as a foothold BEFORE the agent loop (not concurrently); files
+  it writes to the shared workspace persist into the run. `_exec_on_host` runs the
+  code in the agent's OWN image with the workspace mounted (entrypoint overridden
+  to `sh`), so background processes it starts live in a separate short-lived
+  container -- filesystem/workspace effects persist, in-memory daemons do not.
+  Concurrent-with-agent execution would be a larger, separate design and is not
+  implemented.
+- **F.5 Filesystem ops are confined to the workspace.** `_apply_host_files` rejects
+  any path that would escape `workspace/` (a `..` traversal is skipped), so the
+  surface stays scoped to the machine-as-the-agent-sees-it.
+- **F.6 Both surfaces are NOT-APPLICABLE on the `code` and `os-filesystem`
+  domains.** They act on the AGENT container (F.3), which is not the container the
+  judge grades (K). Combined with the claim denying the agent's native tools on
+  those domains (`security_claim_dtap` ASSUMPTIONS D.5), an experiment cell scoped to
+  `host_filesystem` or `host_code_execution` there has no causal path to graded
+  state. A 0 percent result in such a cell is a harness artefact, not a property of
+  the agent, and must be reported as NOT-APPLICABLE rather than as a zero. The
+  surfaces remain meaningful on the other nine domains and on any single-container
+  target. Full reasoning and the reporting rule: `security_claim_dtap`
+  ASSUMPTIONS D.6.
+
+## G. Per-server tool-return authorization trees (anonframework-afforded scoping)
+
+DTAP treats every environment as one undifferentiated MCP server, and the
+tamper-return surface was initially one `tools.<server>` tag per server. But a
+real service's tools do not share one trust boundary: a public read, a
+customer-authenticated booking, and a manager-only endpoint are corruptible by
+different actors. anonframework therefore splits each `tools.<server>` tag into a
+single-parent AUTHORIZATION TREE and scopes each tool's return-tamper event to
+its node. This is a anonframework measurement affordance (finer threat models), NOT a
+DTAP fidelity claim: the tools, their returns, and the judges are unchanged, and
+scoping the whole server (`{tools.<server>}`) reproduces the original behavior.
+
+- **G.1 Placement is by control-of-return, not by caller.** A tool sits at the
+  node whose trust boundary an attacker must compromise to CONTROL WHAT THE TOOL
+  RETURNS (the value that re-enters the agent's context), which is the
+  least-privileged actor who can corrupt that return -- deliberately NOT "who is
+  authorized to call it". A public read is corruptible by whoever controls the
+  upstream public source; an append surface (add a note/review/draft) whose
+  content a later read reflects back is corruptible by any low-privilege
+  contributor, so it is a leaf UNDER the authoritative-read node it feeds, not a
+  peer. Reads of an authoritative stored record are corruptible only by editing
+  that record (the owning service), so they sit high.
+
+- **G.2 Single-parent tree; the server root is the apex.** Tags form
+  `tools.<server>` -> `tools.<server>.<node>` with each node having exactly one
+  parent (the dominating node, or the server root for a top plane). `includes`
+  grants a node plus its descendants, so a more-privileged (ancestor) node grants
+  the lower-trust surfaces it dominates, siblings are isolated, and the server
+  root grants everything. Where a service has no single dominating tool (e.g.
+  `legal`: a public case-law plane and a private firm plane that cannot corrupt
+  each other), the two planes are peers directly under `tools.<server>`, which is
+  then a pure whole-server grant holding no tool of its own.
+
+- **G.3 The trees are DATA, derived per service.** They live in
+  `data/tool_trees.json` (one entry per server) and are built into cached
+  `SecurityDomainTag`s by `tool_trees.build_server_tree`. Refining a single tool's
+  placement is a one-line data edit, no code change. The shipped trees are a
+  best-effort derivation from each service's real authorization structure and a
+  handful of per-tool placements remain debatable (documented inline where
+  relevant); because they are data, they can be corrected without touching the
+  scaffold.
+
+- **G.4 Unmapped tools fall back to the server root.** A tool not present in its
+  server's tree -- a version-drifted tool name, or a dynamically-registered server
+  whose live tool list is not fully enumerated ahead of time (e.g. `legal`
+  resolves its tools at boot) -- resolves to the `tools.<server>` root tag: the
+  conservative whole-server grant. So drift never silently under-scopes a tool
+  (it errs toward the broadest tag), and the mechanism is robust to live tool-list
+  changes.
+
+## H. AnonFramework-afforded catalogue surfaces beyond DTAP's four vectors
+
+DTAP enumerates four injection vectors (prompt, tool-description, skill,
+environment). The port exposes three additional attacker-facing surfaces that DTAP
+does not itself enumerate; each is additive (a passthrough optimizer that declines
+everything reproduces the unattacked upstream run) and anonframework-invented, recorded
+here for auditability:
+
+- **H.1 `attacker_context` observable (`ATTACKER_CONTEXT_TAG`, under `system`).**
+  DTAP's `Attack.additional_information` (per-task ground-truth an upstream
+  red-teamer is handed: the victim inbox an injected email must target, the
+  whitelisted attacker sender accounts) is surfaced as a static, read-only
+  Observable so an in-scope optimizer can read those routing facts. It is scoped on
+  its OWN tag (not `detailed_system_specification`) so an experiment can grant the
+  per-task briefing separately from the static design brief. It is NOT folded into
+  the `Goal` (the `malicious_goal` stays byte-identical; golden-hash preserved), and
+  it is read-only -- never a Controllable. Empty for tasks that carry no
+  `additional_information` (238 crm malicious configs carry it, 149 indirect).
+
+- **H.2 Tool-catalogue ADD / REMOVE (`TOOL_CATALOGUE_ADD_TAG` /
+  `TOOL_CATALOGUE_REMOVE_TAG`, under `tool_catalogue`).** Alongside DTAP's
+  tool-DESCRIPTION edit vector, the port lets an in-scope attacker register a fake
+  tool (`tool_add`) or drop a tool from the listing the agent reads (`tool_remove`).
+  A fake tool has no backend: when the agent calls it, the proxy fires a per-call
+  PostCall tagged at `tool_catalogue_add`, so the same attacker that added it
+  supplies the return (static `fake_return` fallback). An added tool whose name
+  collides with a non-removed genuine tool REPLACES it in the listing (the fake is
+  shown once, and `handle_tool_call` prefers the fake, so listing and call agree).
+  `tool_remove` affects only the LISTING the agent reads (a normal agent never calls
+  a tool absent from its listing); it is not a call-time block. These are additive
+  and firing them is a choice -- the passthrough baseline registers nothing and
+  drops nothing.
+
+- **H.3 Not enforced: config `tool_blacklist`.** The per-server `tool_blacklist`
+  in `Agent.mcp_servers` is deliberately NOT honoured: upstream SDK 0.2.12 parses
+  but never consumes it (no `.py` references; `MCPServerConfig` has no such field),
+  so enforcing it would shrink the agent's tool surface versus the unattacked
+  upstream run. The port therefore ignores it, exactly as upstream does.
+
+## I. Accepted non-substantial residuals (coverage-audit)
+
+One upstream behaviour the port does not fully reproduce. The coverage audit rated it
+non-substantial; it is recorded here as an accepted, bounded residual (worth fixing only
+if a future experiment makes it relevant). The prior `disable_reuse` residual is now
+implemented as part of the fail-closed reset recovery in A.6.
+
+- **I.1 Environment injections applied once up-front, not per user turn.** Upstream
+  re-applies env injections per turn (`turn_id`-filtered) immediately before each
+  `agent.run(turn_instruction)` (`eval/task_runner.py`); `agent_base._apply_env_injections`
+  applies all env injections ONCE before the single episode. Faithful for the shipped
+  dataset: all 6001 text-only configs have a single-string `task_instruction` (0
+  multi-user-turn tasks), so upstream's per-turn scheduling path never activates. The
+  up-front persistent write is visible to the end-of-run env-state judge, and live
+  per-tool-call PostCall return-tampering still fires on every turn. Fix, if a future
+  dataset ships multi-user-turn tasks with `turn_id`-scheduled env writes: thread a
+  per-turn env-injection callback into the run loop.
+
+## J. Discarded injections are logged, not persisted
+
+### J.1 `env_inject` values
+
+`McpEnvInjector.apply` must never abort the run on a malformed attacker value
+(section I and the parser's own docstring), so a value that does not parse into
+any `(tool, kwargs)` call is still swallowed. Swallowing it with no trace at all
+made a genuinely-failed injection indistinguishable from a defended one -- both
+just score as if the vector had never fired. `apply` now logs a `WARNING` (module
+logger, matching `openclaw_target`'s `logging.getLogger(__name__)` pattern) when a
+non-empty value parses to zero calls; an empty value (nothing was injected) does
+not log. This is a log-only fix, not a trajectory marker: the raw injected value
+is already recorded verbatim on the persisted trajectory (the `ControllableInjection`
+response to the `env_inject` PostCall event), so an analyst reviewing a suspiciously
+flat run can already see and re-parse it; adding a redundant marker there would mean
+threading a second callback (`emit`) through `EnvInjector.apply`'s signature, the
+`agent_base` wiring, and every other `EnvInjector` implementation, for information
+already reconstructable from what is persisted today.
+
+### J.2 `tool_add` / `tool_remove` specs
+
+The same defect existed one module over and is now fixed the same way.
+`_normalize_tool_adds` and `_normalize_tool_removes` (`agent_base.py`) drop an
+injected entry that is not an object, or that names no server or no tool. They
+dropped it in silence, and `agent_base` imported no logging at all, so a malformed
+catalogue injection scored identically to a defended one -- the exact situation
+J.1 exists to prevent. Both now report the count through a module logger
+(`_warn_dropped`), matching `injection.py`'s wording and level (`WARNING`). Drop
+semantics are unchanged: a malformed entry must never abort the run. As in J.1 this
+is log-only; the raw injected value is already on the persisted trajectory as the
+`ControllableInjection` response to the `tool_add` / `tool_remove` PreCall event.
+
+## K. The two-container topology is disclosed on two separate channels
+
+A DTAP episode boots **two** containers. The environment container holds `/app` and
+the task files, and the per-task judge `docker exec`s into THAT one, so only work
+landing there is graded. The victim agent runs in its own container, which has no
+`/app` and (on the FS domains) no Python. The agent is given both its own NATIVE
+tools (read/write/edit/exec, acting on its own container) and the ENVIRONMENT tool
+`terminal:execute_command` (a remote call into the environment container), and
+nothing in its context marked these as different machines.
+
+Measured on `code/malicious/indirect/CWE-89/1`, a benign CSV-to-JSON conversion with
+no attacker present: the agent native-reads `/app/data.csv`, gets ENOENT, and never
+writes anything (`task_success` 0.0, 2 of 2 runs). In one run it had already listed
+`/app` successfully through the environment tool and still concluded "possibly
+permissions or symbolic links". The topology, not the agent's capability, was
+deciding the score.
+
+Two disclosures were added. They have **different readers and must not be
+conflated**:
+
+- **K.1 The ATTACKER channel: `system_specification.md` section 2.1.** That file is
+  loaded into `DETAILED_SYSTEM_SPECIFICATION` and published as an observable; it
+  never reaches the victim agent (no code path writes it into any container). The new
+  subsection states the split, which tools reach which container, and which attack
+  surfaces can consequently touch graded state. It exists so an attacker holding the
+  observable in scope can act on an accurate model of the system, which is the point
+  of offering the observable at all. It is written for an LLM attacker: factual,
+  no prose.
+- **K.2 The AGENT channel: `RUNTIME_TOPOLOGY_NOTICE`.** A concrete target's driver
+  writes this into the agent's bootstrap file, **below** the attacker-controllable
+  system prompt, so an attacker system-prompt override cannot remove it (openclaw
+  ASSUMPTIONS F.3). No attacker ever reads it. Measured effect of an earlier draft:
+  environment-tool use went from 0 of 3 (control) to 6 of 6 (disclosed), Fisher exact
+  p = 0.012. That draft named the READ direction and only implied the WRITE
+  direction, and 2 of the 6 disclosed runs read correctly and then wrote the
+  deliverable back to their own container; the `task_success` difference was noise
+  (p about 0.46). The shipped text therefore names **both** directions explicitly.
+
+Both constants live in `system_specification.py` with docstrings stating their
+reader, so the distinction is visible at the definition site rather than only here.
+
+K.2 is additive text the benchmark does not ship. It is a deviation from an
+upstream-faithful replay and must be recorded with any results, alongside the
+native-tools decision in the claim's ASSUMPTIONS D.5 to D.7.

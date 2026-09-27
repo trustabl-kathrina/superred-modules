@@ -1,0 +1,85 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "anonframework-target-dtap-openclaw"
+version = "0.1.0"
+description = "OpenClaw concrete agent target for the DecodingTrust-Agent (DTAP) anonframework port: runs the OpenClaw CLI headless inside an isolated Docker container, wired to the shared dtap-scaffold base (forest, controllables, observables, env/MCP/injection lifecycle). Native exec/fs tools enabled (upstream disabled them)."
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = "MIT"
+license-files = ["LICENSE", "NOTICE", "LICENSES/*"]
+authors = [{ name = "Anonymous Authors" }]
+keywords = [
+    "anonframework",
+    "red-teaming",
+    "ai-safety",
+    "security",
+    "llm",
+    "target",
+    "agent",
+    "dtap",
+    "openclaw",
+]
+dependencies = [
+    "anonframework>=0.1.0",
+    "anonframework-target-dtap-scaffold>=0.1.0",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Security",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=6.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dtap_openclaw_target"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+addopts = "--strict-markers -m 'not docker and not live'"
+testpaths = ["tests"]
+markers = [
+    "docker: requires a Docker daemon + CLI and the OpenClaw image (skipped offline)",
+    "live: requires LLM credentials via the LiteLLM proxy (LITELLM_API_KEY/BASE)",
+    "faithfulness: offline byte-identity / golden checks (no network)",
+]
+
+[tool.coverage.run]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+fail_under = 90
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "\\.\\.\\.",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["UP046", "UP047"]  # Generic[T] syntax requires Python 3.12+; we support 3.11
+
+[tool.mypy]
+strict = true
+python_version = "3.13"
+
+[[tool.mypy.overrides]]
+module = ["dtap_scaffold.*"]
+ignore_missing_imports = true

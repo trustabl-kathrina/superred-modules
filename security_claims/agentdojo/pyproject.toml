@@ -1,0 +1,75 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "anonframework-claim-agentdojo"
+version = "0.1.0"
+description = "AgentDojo SecurityClaim for anonframework: original injection-task port + bespoke system-purpose-violation goals against the composite AgentDojoTarget"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = "MIT"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Anonymous Authors" }]
+keywords = [
+    "anonframework",
+    "red-teaming",
+    "ai-safety",
+    "security",
+    "llm",
+    "security-claim",
+    "agentdojo",
+    "prompt-injection",
+    "agents",
+]
+dependencies = [
+    "anonframework>=0.1.0",
+    "anonframework-target-agentdojo>=0.1.0",
+    "agentdojo>=0.1.35",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Security",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=6.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agentdojo_claim"]
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "audit_raw",
+    "UPSTREAM_PREDICATE_AUDIT.md",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+addopts = "--strict-markers"
+testpaths = ["tests"]
+markers = [
+    "integration: integration tests wiring Target + Optimizer + Controller",
+    "smoke: end-to-end smoke tests against a real LLM (require credentials)",
+]
+
+[tool.coverage.report]
+fail_under = 90
+
+[tool.mypy]
+strict = true
+python_version = "3.13"
+
+[[tool.mypy.overrides]]
+module = ["agentdojo.*", "agentdojo_target.*"]
+ignore_missing_imports = true

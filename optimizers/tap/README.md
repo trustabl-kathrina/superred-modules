@@ -1,0 +1,52 @@
+# anonframework-optimizer-tap
+
+A **Tree of Attacks with Pruning (TAP)** jailbreak optimizer for the
+[anonframework](https://example.invalid) red-teaming framework.
+
+> **Community port — not an official implementation.** This module is an
+> unofficial re-implementation of TAP (Mehrotra et al.) for anonframework. It is not
+> affiliated with, endorsed by, or maintained by the original authors. See
+> [ASSUMPTIONS.md](ASSUMPTIONS.md) for every deliberate deviation from the
+> paper and reference code.
+
+TAP treats jailbreaking as a tree search. An attacker LLM proposes candidate
+prompts, off-topic ones are pruned away, every surviving prompt is sent to the
+real target, and each prompt/response pair is scored 1–10. The best branches are
+kept and expanded again, deepening the tree until a prompt scores a full 10 or
+the maximum depth is reached.
+
+Reference: Mehrotra et al., "Tree of Attacks: Jailbreaking Black-Box LLMs
+Automatically," [arXiv:2312.02119](https://arxiv.org/abs/2312.02119)
+(NeurIPS 2024). Official implementation:
+[`RICommunity/TAP`](https://github.com/RICommunity/TAP) (MIT License).
+See [ASSUMPTIONS.md](ASSUMPTIONS.md) for the full paper-to-code mapping and every
+deliberate departure.
+
+## Install
+
+```bash
+python -m pip install -e "/path/to/anonframework-modules/optimizers/tap"
+```
+
+## Usage
+
+```python
+from tap_optimizer import TapOptimizer
+
+# Paper-aligned defaults (branching_factor=1, tree_width=10, tree_depth=10, ...).
+optimizer = TapOptimizer()
+
+# Reproduce a specific TAP experiment by setting the target opening string.
+optimizer = TapOptimizer(target_str="Sure, here is", tree_depth=8)
+```
+
+Wire it into a `Controller` like any other anonframework optimizer — see the
+framework's [architecture overview](https://example.invalid) and a
+target's README (e.g. `anonframework-target-chatbot`) for a full `Controller.run()` example.
+
+## License
+
+MIT for this port's code (see [LICENSE](LICENSE)). The upstream reference
+implementation, [`RICommunity/TAP`](https://github.com/RICommunity/TAP), is MIT
+licensed. This port reimplements the TAP search and prompts against anonframework's
+event model rather than vendoring upstream source files.

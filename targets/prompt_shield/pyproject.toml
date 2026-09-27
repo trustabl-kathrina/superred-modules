@@ -1,0 +1,54 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "anonframework-target-prompt-shield"
+version = "0.1.0"
+description = "Azure AI Content Safety Prompt Shields (prompt-injection detector) as a anonframework target: red-team the detector for evasion (attackDetected == false) on direct and indirect injection."
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Anonymous Authors" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Security",
+]
+dependencies = [
+    "anonframework>=0.1.0",
+    "httpx>=0.24",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "pytest-cov>=6.0"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/prompt_shield_target"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+addopts = "--strict-markers"
+testpaths = ["tests"]
+markers = [
+    "integration: end-to-end test against a real Azure Content Safety resource (requires AZURE_CONTENT_SAFETY_ENDPOINT and AZURE_CONTENT_SAFETY_KEY)",
+]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+files = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["UP046", "UP047"]

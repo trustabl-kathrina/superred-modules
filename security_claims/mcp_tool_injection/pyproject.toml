@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "anonframework-claim-mcp-tool-injection"
+version = "0.1.0"
+description = "Red-team the MCP tool supply chain as a anonframework SecurityClaim: measure whether a poisoned MCP tool description makes an agent call a sensitive tool it should not. Pairs with the mcp_agent target."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.11,<3.14"
+authors = [{ name = "Anonymous Authors" }]
+dependencies = ["anonframework>=0.1.0", "anonframework-target-mcp-agent>=0.1.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "pytest-cov>=6.0"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mcp_tool_injection_claim"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+addopts = "--strict-markers"
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+files = ["src"]
+[[tool.mypy.overrides]]
+module = ["mcp_agent_target.*", "mcp.*"]
+ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["UP046", "UP047"]

@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "anonframework-claim-safeclawbench-exec"
+version = "0.1.0"
+description = "SafeClawBench Exec-Balanced (sandbox-observed harm) security claims for anonframework"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Anonymous Authors" }]
+keywords = [
+    "anonframework",
+    "red-teaming",
+    "ai-safety",
+    "security",
+    "llm",
+    "claim",
+    "agent",
+]
+dependencies = ["anonframework>=0.1.0", "anonframework-target-safeclawbench-exec"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Security",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/safeclawbench_exec_claim"]
+
+[tool.mypy]
+# The vendored upstream sandbox (in the target package) keeps its own
+# untyped style; check only our claim code.
+[[tool.mypy.overrides]]
+module = "safeclawbench_exec_target._vendor.*"
+ignore_errors = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

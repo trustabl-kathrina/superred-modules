@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "anonframework-optimizer-best-of-n"
+version = "0.1.0"
+description = "Best-of-N jailbreaking optimizer (text arm) for anonframework, ported from bon-jailbreaking"
+requires-python = ">=3.11,<3.14"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE", "NOTICE", "LICENSES/*"]
+authors = [{ name = "Anonymous Authors" }]
+keywords = [
+    "red-teaming",
+    "ai-safety",
+    "jailbreak",
+    "best-of-n",
+    "augmentation",
+    "llm-security",
+    "anonframework",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Security",
+]
+dependencies = ["anonframework>=0.1.0"]
+
+[project.optional-dependencies]
+# Upstream leaves random_prefix_length/random_suffix_length at 0, so the
+# tokenizer they need is an extra rather than a hard dependency.
+tokens = ["tiktoken>=0.5"]
+test = ["pytest", "pytest-asyncio"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "strict"
+pythonpath = ["src"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/best_of_n_optimizer"]

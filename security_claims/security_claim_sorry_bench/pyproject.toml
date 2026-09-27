@@ -1,0 +1,62 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "anonframework-claim-sorry-bench"
+version = "0.1.0"
+description = "SORRY-Bench safety-refusal benchmark as a anonframework SecurityClaim"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE", "NOTICE", "LICENSES/*"]
+requires-python = ">=3.11,<3.14"
+authors = [{ name = "Anonymous Authors" }]
+keywords = [
+    "red-teaming",
+    "ai-safety",
+    "security",
+    "llm",
+    "sorry-bench",
+    "safety-refusal",
+    "benchmark",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Security",
+]
+dependencies = [
+    "anonframework>=0.1.0",
+    "anonframework-target-chatbot>=0.1.0",
+    "huggingface_hub>=0.20",
+]
+
+[project.optional-dependencies]
+test = ["pytest", "pytest-asyncio"]
+smoke = ["python-dotenv"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sorry_bench_claim"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+# tests/smoke/ is a runnable verification artifact, not pytest cases —
+# exclude it so `pytest` never tries to collect or import it.
+norecursedirs = ["tests/smoke"]
+
+[tool.mypy]
+strict = true
+python_version = "3.13"
+
+[[tool.mypy.overrides]]
+# `chatbot_target` does not yet ship a py.typed marker; its types are
+# inspectable but mypy refuses without the marker. Skip until upstream
+# adds one (parallel work — no blocker for us).
+module = "chatbot_target.*"
+ignore_missing_imports = true

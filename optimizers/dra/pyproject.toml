@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "anonframework-optimizer-dra"
+version = "0.1.0"
+description = "Disguise and Reconstruction Attack (DRA) optimizer for anonframework"
+requires-python = ">=3.11,<3.14"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE", "NOTICE", "LICENSES/*"]
+authors = [{ name = "Anonymous Authors" }]
+dependencies = ["anonframework>=0.1.0", "detoxify==0.5.1"]
+
+[project.optional-dependencies]
+test = ["pytest", "pytest-asyncio"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "strict"
+pythonpath = ["src"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dra_optimizer"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/dra_optimizer/data/behaviors.json" = "dra_optimizer/data/behaviors.json"

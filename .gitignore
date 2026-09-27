@@ -1,0 +1,119 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+.env
+*.egg
+.mypy_cache/
+.ruff_cache/
+
+.coverage
+.pytest_cache/
+.hypothesis/
+.mutmut-cache
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.ipynb_checkpoints/
+
+# Local credentials and machine-specific configuration.
+.env*
+!.env.example
+secrets/
+credentials/
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+
+# Generated or locally obtained material. Tracked benchmark data under module
+# source trees is intentional and is therefore not covered by blanket data-file
+# exclusions.
+downloads/
+local-data/
+private-data/
+artifacts/
+outputs/
+results/
+runs/
+checkpoints/
+models/
+scratch/
+tmp/
+temp/
+*-results/
+
+# Formats that commonly retain EXIF metadata, document authors, notebook
+# outputs, embedded paths, or large generated model artifacts. Required files
+# in these formats must be force-added only after inspection.
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.heic
+*.bmp
+*.tif
+*.tiff
+*.svg
+*.ico
+*.pdf
+*.doc
+*.docx
+*.ppt
+*.pptx
+*.xls
+*.xlsx
+*.ipynb
+*.mp3
+*.mp4
+*.mov
+*.avi
+*.wav
+*.flac
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar
+*.sqlite
+*.sqlite3
+*.db
+*.npy
+*.npz
+*.h5
+*.hdf5
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.bin
+*.log
+*.trace
+*.dump
+
+# ASB target runtime artifacts (vendored aios/pyopenagi write these relative to
+# the cwd a run is launched from; regenerated on every run, never versioned)
+aios/
+logs/
+memory_db/
+*context_restoration*
+
+# Local AI-agent steering pointers (machine-local, not versioned)
+CLAUDE.md
+AGENTS.md
+
+# The framework persists results by default; module test suites that drive a
+# real Controller drop this next to the package. It is test debris, and leaving
+# it in place makes the NEXT run resume from it and return kept tasks with no
+# runs, which silently breaks end-to-end assertions.
+anonframework-results/
+
+# Claude Code local worktrees/state
+.claude/

@@ -1,0 +1,7 @@
+{
+  "name": "anonframework-injection-plugin",
+  "version": "0.1.0",
+  "description": "OpenClaw plugin for anonframework tool-output injection during red-teaming",
+  "main": "index.js",
+  "type": "module"
+}

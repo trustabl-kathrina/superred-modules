@@ -1,0 +1,16 @@
+{
+  "id": "anonframework-injection",
+  "activation": {
+    "onStartup": true
+  },
+  "name": "AnonFramework Injection",
+  "description": "Tool-output injection bridge for anonframework red-teaming (live tool-result middleware + transcript-poison hooks).",
+  "contracts": {
+    "agentToolResultMiddleware": ["openclaw"]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
